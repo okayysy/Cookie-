@@ -1,0 +1,141 @@
+import 'dotenv/config';
+import express from 'express';
+import axios from 'axios';
+import helmet from 'helmet';
+import cors from 'cors';
+import rateLimit from 'express-rate-limit';
+import { z } from 'zod';
+
+const app = express();
+app.use(helmet());
+app.use(cors());
+app.use(express.json({ limit: '200kb' }));
+
+const limiter = rateLimit({ windowMs: 60_000, max: 60 }); // 60 req/min
+app.use(limiter);
+
+// --- Config ---
+const API_KEY = process.env.ROBLOX_API_KEY;
+const UNIVERSE_ID = process.env.UNIVERSE_ID;
+if (!API_KEY || !UNIVERSE_ID) {
+  console.error('Missing ROBLOX_API_KEY or UNIVERSE_ID in .env');
+  process.exit(1);
+}
+
+// --- Helpers ---
+const openCloud = axios.create({
+  headers: { 'x-api-key': API_KEY, 'Content-Type': 'application/json' },
+  timeout: 10_000
+});
+
+// Simple auth for your dashboard/clients (replace with your own auth/jwt)
+app.use('/api', (req, res, next) => {
+  // e.g., check req.headers.authorization === `Bearer ${YOUR_TOKEN}`
+  // For demo only:
+  return next();
+});
+
+// --- Schemas ---
+const getSchema = z.object({
+  store: z.string().min(1),
+  scope: z.string().optional(),
+  key: z.string().min(1)
+});
+
+const setSchema = z.object({
+  store: z.string().min(1),
+  scope: z.string().optional(),
+  key: z.string().min(1),
+  value: z.any() // you can tighten this
+});
+
+const publishSchema = z.object({
+  topic: z.string().min(1),
+  message: z.any()
+});
+
+// --- Routes ---
+
+// Read from DataStore
+app.post('/api/datastore/get', async (req, res) => {
+  const parsed = getSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json(parsed.error);
+
+  const { store, scope, key } = parsed.data;
+  try {
+    const url = new URL(
+      `/datastores/v1/universes/${UNIVERSE_ID}/standard-datastores/datastore/entries/entry`,
+      'https://apis.roblox.com'
+    );
+    url.searchParams.set('datastoreName', store);
+    url.searchParams.set('entryKey', key);
+    if (scope) url.searchParams.set('scope', scope);
+
+    const { data, headers } = await openCloud.get(url.toString(), {
+      responseType: 'text' // DataStore returns raw JSON string
+    });
+
+    // Try to parse JSON, but fall back to string
+    let value = data;
+    try { value = JSON.parse(data); } catch {}
+
+    res.json({
+      value,
+      etag: headers['roblox-entry-version'] ?? null
+    });
+  } catch (err) {
+    const status = err.response?.status || 500;
+    res.status(status).json({ error: err.response?.data || 'Open Cloud error' });
+  }
+});
+
+// Write to DataStore
+app.post('/api/datastore/set', async (req, res) => {
+  const parsed = setSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json(parsed.error);
+
+  const { store, scope, key, value } = parsed.data;
+  try {
+    const url = new URL(
+      `/datastores/v1/universes/${UNIVERSE_ID}/standard-datastores/datastore/entries/entry`,
+      'https://apis.roblox.com'
+    );
+    url.searchParams.set('datastoreName', store);
+    url.searchParams.set('entryKey', key);
+    if (scope) url.searchParams.set('scope', scope);
+
+    const body = typeof value === 'string' ? value : JSON.stringify(value);
+    const { headers } = await openCloud.post(url.toString(), body, {
+      headers: { 'Content-Type': 'application/json' }
+    });
+
+    res.json({ ok: true, etag: headers['roblox-entry-version'] ?? null });
+  } catch (err) {
+    const status = err.response?.status || 500;
+    res.status(status).json({ error: err.response?.data || 'Open Cloud error' });
+  }
+});
+
+// Publish to MessagingService
+app.post('/api/messaging/publish', async (req, res) => {
+  const parsed = publishSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json(parsed.error);
+
+  const { topic, message } = parsed.data;
+  try {
+    const url = new URL(
+      `/messaging-service/v1/universes/${UNIVERSE_ID}/topics/${encodeURIComponent(topic)}`,
+      'https://apis.roblox.com'
+    );
+    await openCloud.post(url.toString(), { message });
+    res.json({ ok: true });
+  } catch (err) {
+    const status = err.response?.status || 500;
+    res.status(status).json({ error: err.response?.data || 'Open Cloud error' });
+  }
+});
+
+app.get('/health', (_, res) => res.json({ ok: true }));
+app.listen(process.env.PORT || 8080, () =>
+  console.log(`Server running on :${process.env.PORT || 8080}`)
+);
