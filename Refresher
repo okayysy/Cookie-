@@ -1,3 +1,12 @@
+# Setup
+mkdir roblox-backend && cd roblox-backend
+npm init -y
+npm i express axios helmet cors express-rate-limit zod dotenv
+
+PORT=8080
+ROBLOX_API_KEY=your_open_cloud_api_key_here
+UNIVERSE_ID=your_universe_id_here
+
 import 'dotenv/config';
 import express from 'express';
 import axios from 'axios';
@@ -139,3 +148,20 @@ app.get('/health', (_, res) => res.json({ ok: true }));
 app.listen(process.env.PORT || 8080, () =>
   console.log(`Server running on :${process.env.PORT || 8080}`)
 );
+
+node index.js
+
+# 1000
+curl -X POST http://localhost:8080/api/datastore/set \
+  -H "Content-Type: application/json" \
+  -d '{"store":"PlayerData","scope":"global","key":"user_123","value":{"coins":100}}'
+
+# get it back
+curl -X POST http://localhost:8080/api/datastore/get \
+  -H "Content-Type: application/json" \
+  -d '{"store":"PlayerData","scope":"global","key":"user_123"}'
+
+# publish to a topic
+curl -X POST http://localhost:8080/api/messaging/publish \
+  -H "Content-Type: application/json" \
+  -d '{"topic":"Announcements","message":{"text":"Hello, servers!"}}'
